@@ -7,7 +7,7 @@ PAP FKIP Universitas Sebelas Maret
 import streamlit as st
 import io, re
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor
+from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -48,7 +48,7 @@ def format_authors_apa7(authors):
     if not authors: return ''
     fmt=[]
     for last,inits in authors:
-        ic = re.sub(r'([A-Z])(?!\.)(?!\s*[A-Z]\.)' ,r'\1.',inits)
+        ic = re.sub(r'([A-Z])(?!\.)(?!\s*[A-Z]\.)',r'\1.',inits)
         ic = re.sub(r'\s+',' ',ic).strip()
         fmt.append(f"{last}, {ic}" if ic else last)
     if len(fmt)==1: return fmt[0]
@@ -142,7 +142,7 @@ def format_reference_apa7(parsed):
     else: segs.append((r['raw'],False))
     return segs
 
-# ── Font helpers ──────────────────────────────────────────────────────────────
+# ── Font / paragraph helpers ─────────────────────────────────────────────────
 
 def set_page_margins(doc):
     for section in doc.sections:
@@ -155,9 +155,12 @@ def clear_pf(para):
     pf.space_before=Pt(0); pf.space_after=Pt(0)
     pf.first_line_indent=None; pf.left_indent=None; pf.right_indent=None
 
-def set_run_font(run, fname, fsize, bold=False, italic=False):
+def set_run_font(run, fname, fsize, bold=False, italic=False,
+                 subscript=None, superscript=None):
     run.font.name=fname; run.font.size=Pt(fsize)
     run.font.bold=bold; run.font.italic=italic
+    if subscript is not None: run.font.subscript=subscript
+    if superscript is not None: run.font.superscript=superscript
     rpr=run._r.get_or_add_rPr()
     rFonts=rpr.find(qn('w:rFonts'))
     if rFonts is None: rFonts=OxmlElement('w:rFonts'); rpr.insert(0,rFonts)
@@ -165,7 +168,118 @@ def set_run_font(run, fname, fsize, bold=False, italic=False):
 
 def get_full_text(para): return ''.join(r.text for r in para.runs).strip()
 
-# ── Paragraph formatters ──────────────────────────────────────────────────────
+def apply_font_to_para(para, fname, fsize, bold=False, italic=False):
+    """Apply font to all runs, preserving existing subscript/superscript."""
+    for run in para.runs:
+        sub = run.font.subscript
+        sup = run.font.superscript
+        set_run_font(run, fname, fsize, bold=bold, italic=italic,
+                     subscript=sub, superscript=sup)
+
+# ── Tab-delimited → Word Table converter ─────────────────────────────────────
+
+def is_tab_row(text):
+    """Return True if paragraph looks like a tab-delimited data row."""
+    return '\t' in text and len(text.strip()) > 0
+
+def parse_tab_rows(paragraphs, start_idx):
+    """
+    Starting from start_idx, collect consecutive tab-delimited rows.
+    Returns (rows_as_list_of_lists, end_idx)
+    """
+    rows = []
+    i = start_idx
+    while i < len(paragraphs):
+        text = ''.join(r.text for r in paragraphs[i].runs)
+        if is_tab_row(text):
+            cells = [c.strip() for c in text.split('\t')]
+            rows.append(cells)
+            i += 1
+        else:
+            break
+    return rows, i
+
+def insert_table_after(doc, ref_para, rows_data):
+    """
+    Insert a properly formatted JIKAP table after ref_para.
+    rows_data: list of lists of strings.
+    Returns the inserted table element.
+    """
+    if not rows_data: return None
+
+    # Normalize column count
+    n_cols = max(len(row) for row in rows_data)
+    rows_data = [row + [''] * (n_cols - len(row)) for row in rows_data]
+
+    # Page content width: A4 - 2*3cm = 15cm = 8505 DXA
+    page_width_dxa = 8505
+    col_width = page_width_dxa // n_cols
+
+    from docx.shared import Pt as _Pt
+    from docx.oxml import OxmlElement as _OE
+    from docx.oxml.ns import qn as _qn
+
+    table = doc.add_table(rows=len(rows_data), cols=n_cols)
+    pass  # use default style
+
+    # Set column widths
+    for row in table.rows:
+        for cell in row.cells:
+            tc = cell._tc
+            tcPr = tc.find(_qn('w:tcPr'))
+            if tcPr is None: tcPr = _OE('w:tcPr'); tc.insert(0, tcPr)
+            tcW = _OE('w:tcW')
+            tcW.set(_qn('w:w'), str(col_width))
+            tcW.set(_qn('w:type'), 'dxa')
+            old = tcPr.find(_qn('w:tcW'))
+            if old is not None: tcPr.remove(old)
+            tcPr.append(tcW)
+
+    # Fill data and format
+    for ri, row_data in enumerate(rows_data):
+        for ci, cell_text in enumerate(row_data):
+            cell = table.cell(ri, ci)
+            para = cell.paragraphs[0]
+            para.clear()
+            run = para.add_run(cell_text)
+            set_run_font(run, FONT_TNR, 10, bold=(ri == 0))
+            para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            para.paragraph_format.space_before = _Pt(0)
+            para.paragraph_format.space_after = _Pt(0)
+
+    # Set borders: top line, header bottom line, table bottom line only
+    tbl = table._tbl
+    tblPr = tbl.find(_qn('w:tblPr'))
+    if tblPr is None: tblPr = _OE('w:tblPr'); tbl.insert(0, tblPr)
+    tb = _OE('w:tblBorders')
+    for side in ['top','left','bottom','right','insideH','insideV']:
+        b = _OE(f'w:{side}')
+        if side in ('top','bottom'):
+            b.set(_qn('w:val'),'single'); b.set(_qn('w:sz'),'6'); b.set(_qn('w:color'),'000000')
+        else:
+            b.set(_qn('w:val'),'none'); b.set(_qn('w:sz'),'0'); b.set(_qn('w:color'),'auto')
+        tb.append(b)
+    old = tblPr.find(_qn('w:tblBorders'))
+    if old is not None: tblPr.remove(old)
+    tblPr.append(tb)
+
+    # Header row bottom border
+    for cell in table.rows[0].cells:
+        tc = cell._tc
+        tcPr = tc.find(_qn('w:tcPr'))
+        if tcPr is None: tcPr = _OE('w:tcPr'); tc.insert(0, tcPr)
+        tcB = _OE('w:tcBorders'); b = _OE('w:bottom')
+        b.set(_qn('w:val'),'single'); b.set(_qn('w:sz'),'6'); b.set(_qn('w:color'),'000000')
+        tcB.append(b)
+        old_tb = tcPr.find(_qn('w:tcBorders'))
+        if old_tb is not None: tcPr.remove(old_tb)
+        tcPr.append(tcB)
+
+    # Move table XML to position after ref_para
+    ref_para._p.addnext(table._tbl)
+    return table
+
+# ── Paragraph classifiers ─────────────────────────────────────────────────────
 
 def classify_paragraph(para):
     sn=(para.style.name or '').lower()
@@ -183,6 +297,7 @@ def classify_paragraph(para):
     if re.match(r'^(table|tabel)\s+\d+',tl): return 'table_title'
     if re.match(r'^(figure|gambar|image)\s+\d+',tl): return 'figure_caption'
     if re.match(r'^email:',tl) or ('@' in text and len(text)<80): return 'email'
+    if is_tab_row(text): return 'tab_row'
     all_bold=all(r.bold for r in para.runs if r.text.strip())
     if all_bold and len(text)<80:
         if tl in SECTIONS_H1: return 'h1'
@@ -190,48 +305,76 @@ def classify_paragraph(para):
         if len(text)<50: return 'h2'
     return 'body'
 
+# ── Paragraph formatters ──────────────────────────────────────────────────────
+
 def fmt_title(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT; p.paragraph_format.space_after=Pt(20)
-    for r in p.runs: set_run_font(r,FONT_ARIAL,14,bold=True)
+    apply_font_to_para(p,FONT_ARIAL,14,bold=True)
+
 def fmt_author(p):
+    # FIX: TNR 10pt (not Arial, not bold per JIKAP spec)
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-    for r in p.runs: set_run_font(r,FONT_TNR,10,bold=True)
+    apply_font_to_para(p,FONT_TNR,10)
+
 def fmt_affil(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-    for r in p.runs: set_run_font(r,FONT_TNR,10)
+    apply_font_to_para(p,FONT_TNR,10)
+
 def fmt_email(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT; p.paragraph_format.space_after=Pt(10)
-    for r in p.runs: set_run_font(r,FONT_TNR,10)
+    apply_font_to_para(p,FONT_TNR,10)
+
 def fmt_abstract_label(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.space_before=Pt(10)
-    for r in p.runs: set_run_font(r,FONT_TNR,10,bold=True)
-def fmt_abstract_body(p,en=False):
-    clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent=Cm(0)
-    for r in p.runs: set_run_font(r,FONT_TNR,10,italic=en)
+    apply_font_to_para(p,FONT_TNR,10,bold=True)
+
+def fmt_abstract_body(p, en=False):
+    """
+    Abstract body: TNR 10pt, indent 5 spaces (~0.9cm) both left AND right,
+    justified, spasi 1.
+    Indonesian: tegak. English: italic.
+    """
+    clear_pf(p)
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.first_line_indent = Cm(0)
+    p.paragraph_format.left_indent  = Cm(0.9)   # ~5 spaces indent left
+    p.paragraph_format.right_indent = Cm(0.9)   # ~5 spaces indent right
+    apply_font_to_para(p, FONT_TNR, 10, italic=en)
+
 def fmt_keywords(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-    for r in p.runs: set_run_font(r,FONT_TNR,10,bold=True,italic=True)
+    p.paragraph_format.left_indent  = Cm(0.9)
+    p.paragraph_format.right_indent = Cm(0.9)
+    apply_font_to_para(p,FONT_TNR,10,bold=True,italic=True)
+
 def fmt_h1(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT; p.paragraph_format.space_before=Pt(10)
-    for r in p.runs: set_run_font(r,FONT_ARIAL,12,bold=True)
+    apply_font_to_para(p,FONT_ARIAL,12,bold=True)
+
 def fmt_h2(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT; p.paragraph_format.space_before=Pt(10)
-    for r in p.runs: set_run_font(r,FONT_ARIAL,10,bold=True)
+    apply_font_to_para(p,FONT_ARIAL,10,bold=True)
+
 def fmt_h3(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT; p.paragraph_format.space_before=Pt(10)
-    for r in p.runs: set_run_font(r,FONT_ARIAL,10,italic=True)
+    apply_font_to_para(p,FONT_ARIAL,10,italic=True)
+
 def fmt_body(p):
-    clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent=Cm(0.9)
-    for r in p.runs: set_run_font(r,FONT_TNR,10)
+    clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.first_line_indent=Cm(0.9)
+    apply_font_to_para(p,FONT_TNR,10)
+
 def fmt_table_title(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.space_before=Pt(10); p.paragraph_format.space_after=Pt(2)
-    for r in p.runs: set_run_font(r,FONT_TNR,10,bold=True)
+    apply_font_to_para(p,FONT_TNR,10,bold=True)
+
 def fmt_fig_caption(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.space_before=Pt(2); p.paragraph_format.space_after=Pt(10)
-    for r in p.runs: set_run_font(r,FONT_TNR,10,italic=True)
-def fmt_ref_entry(para,segments):
+    apply_font_to_para(p,FONT_TNR,10,italic=True)
+
+def fmt_ref_entry(para, segments):
     clear_pf(para); para.alignment=WD_ALIGN_PARAGRAPH.LEFT
     para.paragraph_format.left_indent=Cm(0.9); para.paragraph_format.first_line_indent=Cm(-0.9)
     if segments:
@@ -242,7 +385,7 @@ def fmt_ref_entry(para,segments):
             else: r=para.add_run(text)
             set_run_font(r,FONT_TNR,10,italic=is_italic)
     else:
-        for r in para.runs: set_run_font(r,FONT_TNR,10)
+        apply_font_to_para(para,FONT_TNR,10)
 
 def fmt_table(table):
     n=len(table.rows)
@@ -250,7 +393,7 @@ def fmt_table(table):
         for cell in row.cells:
             for p in cell.paragraphs:
                 p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-                for r in p.runs: set_run_font(r,FONT_TNR,10,bold=(ri==0))
+                apply_font_to_para(p,FONT_TNR,10,bold=(ri==0))
     tbl=table._tbl
     tblPr=tbl.find(qn('w:tblPr'))
     if tblPr is None: tblPr=OxmlElement('w:tblPr'); tbl.insert(0,tblPr)
@@ -283,35 +426,30 @@ def make_run_rpr(fname, fsize, bold=False, italic=False):
     rpr.append(rFonts)
     sz=OxmlElement('w:sz'); sz.set(qn('w:val'),str(int(fsize*2))); rpr.append(sz)
     szCs=OxmlElement('w:szCs'); szCs.set(qn('w:val'),str(int(fsize*2))); rpr.append(szCs)
-    if bold: b=OxmlElement('w:b'); rpr.append(b); bCs=OxmlElement('w:bCs'); rpr.append(bCs)
-    if italic: i=OxmlElement('w:i'); rpr.append(i); iCs=OxmlElement('w:iCs'); rpr.append(iCs)
+    if bold: rpr.append(OxmlElement('w:b')); rpr.append(OxmlElement('w:bCs'))
+    if italic: rpr.append(OxmlElement('w:i')); rpr.append(OxmlElement('w:iCs'))
     return rpr
 
 def add_page_number_run(para, suffix='', fname=FONT_TNR, fsize=10, italic=True):
-    """Add PAGE field + suffix text to existing paragraph."""
-    p=para._p
-    XML_SPACE='http://www.w3.org/XML/1998/namespace'
-    r1=OxmlElement('w:r'); r1.append(make_run_rpr(fname,fsize,italic=italic))
-    fc1=OxmlElement('w:fldChar'); fc1.set(qn('w:fldCharType'),'begin'); r1.append(fc1); p.append(r1)
-    r2=OxmlElement('w:r'); r2.append(make_run_rpr(fname,fsize,italic=italic))
-    it=OxmlElement('w:instrText'); it.text='PAGE'; it.set(f'{{{XML_SPACE}}}space','preserve'); r2.append(it); p.append(r2)
-    r3=OxmlElement('w:r'); r3.append(make_run_rpr(fname,fsize,italic=italic))
-    fc3=OxmlElement('w:fldChar'); fc3.set(qn('w:fldCharType'),'separate'); r3.append(fc3); p.append(r3)
-    r4=OxmlElement('w:r'); r4.append(make_run_rpr(fname,fsize,italic=italic))
-    t4=OxmlElement('w:t'); t4.text='1'; r4.append(t4); p.append(r4)
-    r5=OxmlElement('w:r'); r5.append(make_run_rpr(fname,fsize,italic=italic))
-    fc5=OxmlElement('w:fldChar'); fc5.set(qn('w:fldCharType'),'end'); r5.append(fc5); p.append(r5)
+    p=para._p; NS='{http://www.w3.org/XML/1998/namespace}'
+    for fc,itext in [('begin',None),('PAGE_INSTR',None),('separate',None),('VALUE','1'),('end',None)]:
+        r=OxmlElement('w:r'); r.append(make_run_rpr(fname,fsize,italic=italic))
+        if fc=='PAGE_INSTR':
+            it=OxmlElement('w:instrText'); it.text='PAGE'; it.set(f'{NS}space','preserve'); r.append(it)
+        elif fc=='VALUE':
+            t=OxmlElement('w:t'); t.text='1'; r.append(t)
+        else:
+            fc_elem=OxmlElement('w:fldChar'); fc_elem.set(qn('w:fldCharType'),fc); r.append(fc_elem)
+        p.append(r)
     if suffix:
-        r6=OxmlElement('w:r'); r6.append(make_run_rpr(fname,fsize,italic=italic))
-        t6=OxmlElement('w:t'); t6.text=suffix; t6.set(f'{{{XML_SPACE}}}space','preserve'); r6.append(t6); p.append(r6)
+        r=OxmlElement('w:r'); r.append(make_run_rpr(fname,fsize,italic=italic))
+        t=OxmlElement('w:t'); t.text=suffix; t.set(f'{NS}space','preserve'); r.append(t); p.append(r)
 
-def hf_add_para(container, text, fname=FONT_TNR, fsize=10, bold=False, italic=False, align=WD_ALIGN_PARAGRAPH.LEFT):
+def hf_add_para(container, text='', fname=FONT_TNR, fsize=10, bold=False, italic=False):
     p=container.add_paragraph()
-    p.alignment=align
     p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
     if text:
-        run=p.add_run(text)
-        set_run_font(run,fname,fsize,bold=bold,italic=italic)
+        run=p.add_run(text); set_run_font(run,fname,fsize,bold=bold,italic=italic)
     return p
 
 def build_headers_footers(doc, meta):
@@ -324,28 +462,27 @@ def build_headers_footers(doc, meta):
     section=doc.sections[0]
     section.different_first_page_header_footer=True
 
-    # ── First page header: journal name / vol info / hlm ──
+    # First page header
     fph=section.first_page_header
     for p in fph.paragraphs: p.clear()
     hf_add_para(fph,'Jurnal Informasi dan Komunikasi Administrasi Perkantoran',bold=True)
     hf_add_para(fph,f'Vol. {vol}, No. {no}, {year}')
     hf_add_para(fph,f'Hlm. {page_start}')
 
-    # ── Default header (page 2+): {PAGE}  –  Jurnal..., year, vol(no). ──
+    # Default header (page 2+): {PAGE} – Jurnal..., year, vol(no).
     dh=section.header
     for p in dh.paragraphs: p.clear()
     hp=dh.paragraphs[0]
     hp.alignment=WD_ALIGN_PARAGRAPH.LEFT
     hp.paragraph_format.space_before=Pt(0); hp.paragraph_format.space_after=Pt(0)
     suffix=f'  \u2013  Jurnal Informasi dan Komunikasi Administrasi Perkantoran, {year}, {vol}({no}).'
-    add_page_number_run(hp, suffix=suffix, fname=FONT_TNR, fsize=10, italic=True)
+    add_page_number_run(hp,suffix=suffix,fname=FONT_TNR,fsize=10,italic=True)
 
-    # ── First page footer: ___ / * Corresponding author / Citation ──
+    # First page footer
     fpf=section.first_page_footer
     for p in fpf.paragraphs: p.clear()
     hf_add_para(fpf,'____________________',italic=True)
     hf_add_para(fpf,'* Corresponding author',italic=True)
-    # Citation paragraph (mixed bold/normal/italic)
     p_cite=fpf.add_paragraph()
     p_cite.paragraph_format.space_before=Pt(0); p_cite.paragraph_format.space_after=Pt(0)
     r1=p_cite.add_run('Citation in APA style'); set_run_font(r1,FONT_TNR,10,bold=True)
@@ -354,26 +491,23 @@ def build_headers_footers(doc, meta):
     set_run_font(r3,FONT_TNR,10,italic=True)
     if doi: r4=p_cite.add_run(f' {doi}'); set_run_font(r4,FONT_TNR,10)
 
-    # ── Default footer: empty ──
+    # Default footer: empty
     df=section.footer
     for p in df.paragraphs: p.clear()
 
-# ── DOI / Received line insertion ────────────────────────────────────────────
+# ── Received / DOI line insertion ─────────────────────────────────────────────
 
 def insert_doi_received(doc, meta):
     received=meta.get('received',''); revised=meta.get('revised','')
     accepted=meta.get('accepted',''); published=meta.get('published','')
     doi=meta.get('doi','')
     received_text=f"Received {received}; Revised {revised}; Accepted {accepted}; Published Online {published}"
-
-    paragraphs=doc.paragraphs
     insert_after_idx=None
-    for i,para in enumerate(paragraphs):
+    for i,para in enumerate(doc.paragraphs):
         tl=get_full_text(para).lower()
         if re.match(r'^keywords?\s*:',tl): insert_after_idx=i
-
     if insert_after_idx is not None:
-        ref_para=paragraphs[insert_after_idx]
+        ref_para=doc.paragraphs[insert_after_idx]
         def insert_after(ref_p_elem, text_segs):
             new_p=OxmlElement('w:p'); ref_p_elem.addnext(new_p)
             for p in doc.paragraphs:
@@ -391,6 +525,42 @@ def insert_doi_received(doc, meta):
 def format_document(input_bytes, meta):
     doc=Document(io.BytesIO(input_bytes))
     set_page_margins(doc)
+
+    # First pass: collect tab-row groups and their positions
+    # We process paragraphs in order; when we hit a tab_row group,
+    # convert them into a real Word table
+    paragraphs=list(doc.paragraphs)
+    n=len(paragraphs)
+    classifications=[classify_paragraph(p) for p in paragraphs]
+
+    # Build list of tab-row groups: [(start_idx, end_idx), ...]
+    # Process in reverse order so indices remain valid after insertions
+    tab_groups=[]
+    i=0
+    while i < n:
+        if classifications[i]=='tab_row':
+            start=i
+            while i < n and classifications[i]=='tab_row': i+=1
+            tab_groups.append((start, i))
+        else:
+            i+=1
+
+    # Convert tab groups to tables (process in reverse order)
+    for (start, end) in reversed(tab_groups):
+        rows_data=[]
+        for idx in range(start, end):
+            text=''.join(r.text for r in paragraphs[idx].runs)
+            cells=[c.strip() for c in text.split('\t')]
+            rows_data.append(cells)
+        # Insert table after the paragraph BEFORE the first tab row
+        anchor_para=paragraphs[start-1] if start > 0 else paragraphs[start]
+        insert_table_after(doc, anchor_para, rows_data)
+        # Remove original tab paragraphs
+        for idx in range(start, end):
+            p=paragraphs[idx]._p
+            p.getparent().remove(p)
+
+    # Re-read paragraphs after table insertion
     paragraphs=list(doc.paragraphs)
     classifications=[classify_paragraph(p) for p in paragraphs]
 
@@ -416,11 +586,14 @@ def format_document(input_bytes, meta):
             cls='reference_entry'; classifications[i]=cls
 
         if cls=='empty': clear_pf(para); continue
+        if cls=='tab_row': continue  # already converted
 
         if state=='abstract_id_label' and tl=='abstrak': fmt_abstract_label(para)
         elif state=='abstract_en_label' and tl=='abstract': fmt_abstract_label(para)
-        elif id_ab and tl!='abstrak' and cls not in ('keywords',): state='abstract_id_body'; fmt_abstract_body(para,en=False)
-        elif en_ab and tl!='abstract' and cls not in ('keywords',): state='abstract_en_body'; fmt_abstract_body(para,en=True)
+        elif id_ab and tl!='abstrak' and cls not in ('keywords',):
+            state='abstract_id_body'; fmt_abstract_body(para,en=False)
+        elif en_ab and tl!='abstract' and cls not in ('keywords',):
+            state='abstract_en_body'; fmt_abstract_body(para,en=True)
         elif state=='keywords_id': fmt_keywords(para)
         elif state=='keywords_en': fmt_keywords(para)
         elif state=='received': para.clear(); state='body'
@@ -437,6 +610,7 @@ def format_document(input_bytes, meta):
         elif cls=='email': fmt_email(para)
         else: fmt_body(para)
 
+    # Format existing Word tables
     for table in doc.tables: fmt_table(table)
 
     insert_doi_received(doc, meta)
@@ -499,9 +673,9 @@ if st.button("▶  Format Manuscript",type="primary",use_container_width=True):
                 out_name=uploaded_file.name.replace(".docx","_JIKAP_formatted.docx")
                 st.download_button(
                     label="⬇️  Download Manuscript Terformat",
-                    data=output_bytes,file_name=out_name,
+                    data=output_bytes, file_name=out_name,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True,type="primary"
+                    use_container_width=True, type="primary"
                 )
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
@@ -516,11 +690,14 @@ with st.expander("ℹ️ Format yang diterapkan"):
     | Header hal. 2+ | {No halaman} – Jurnal..., tahun, vol(no) |
     | Footer hal. 1 | Garis / * Corresponding author / Citation APA |
     | Judul artikel | Arial 14pt Bold |
+    | Nama penulis | TNR 10pt |
     | Body teks | TNR 10pt, justified, indent 5 spasi |
+    | Abstrak (Indonesia) | TNR 10pt tegak, indent kiri-kanan 5 spasi |
+    | Abstrak (Inggris) | TNR 10pt italic, indent kiri-kanan 5 spasi |
     | Heading 1 | Arial 12pt Bold |
     | Heading 2 | Arial 10pt Bold |
-    | Abstrak Indonesia | TNR 10pt tegak |
-    | Abstrak Inggris | TNR 10pt italic |
+    | Sub/superscript | Dipertahankan dari input |
+    | Tab-delimited data | Otomatis dikonversi ke tabel Word |
     | Referensi | TNR 10pt, hanging indent, APA 7 |
     """)
 
