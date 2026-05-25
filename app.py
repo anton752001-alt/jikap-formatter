@@ -1,4 +1,4 @@
- """
+"""
 JIKAP Manuscript Formatter - Streamlit Web App
 Jurnal Informasi dan Komunikasi Administrasi Perkantoran
 PAP FKIP Universitas Sebelas Maret
