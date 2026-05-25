@@ -13,16 +13,12 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-# ─────────────────────────────────────────────
-# CONSTANTS
-# ─────────────────────────────────────────────
 FONT_ARIAL = "Arial"
 FONT_TNR   = "Times New Roman"
-MARGIN_CM  = 3.0
 
 SECTIONS_H1 = {
     "introduction", "pendahuluan",
-    "research methods", "metode penelitian", "metodologi penelitian", "method",
+    "research methods", "metode penelitian", "metodologi penelitian", "method", "research method",
     "results and discussion", "hasil dan pembahasan", "hasil penelitian dan pembahasan",
     "conclusion", "kesimpulan", "conclusions",
     "references", "daftar pustaka",
@@ -35,7 +31,7 @@ SECTIONS_H2 = {
 }
 
 # ─────────────────────────────────────────────
-# REFERENCE PARSER & APA 7 FORMATTER
+# REFERENCE PARSER
 # ─────────────────────────────────────────────
 
 def clean_text(t):
@@ -56,9 +52,7 @@ def parse_author_string(raw):
             i += 2
         elif ',' in part:
             comma_idx = part.index(',')
-            last = part[:comma_idx].strip()
-            inits = part[comma_idx+1:].strip()
-            authors.append((last, inits))
+            authors.append((part[:comma_idx].strip(), part[comma_idx+1:].strip()))
             i += 1
         else:
             authors.append((part, ''))
@@ -71,16 +65,10 @@ def format_authors_apa7(authors):
     for last, inits in authors:
         inits_clean = re.sub(r'([A-Z])(?!\.)(?!\s*[A-Z]\.)', r'\1.', inits)
         inits_clean = re.sub(r'\s+', ' ', inits_clean).strip()
-        if inits_clean:
-            formatted.append(f"{last}, {inits_clean}")
-        else:
-            formatted.append(last)
-    if len(formatted) == 1:
-        return formatted[0]
-    elif len(formatted) <= 20:
-        return ', '.join(formatted[:-1]) + ', & ' + formatted[-1]
-    else:
-        return ', '.join(formatted[:19]) + ', . . . ' + formatted[-1]
+        formatted.append(f"{last}, {inits_clean}" if inits_clean else last)
+    if len(formatted) == 1: return formatted[0]
+    if len(formatted) <= 20: return ', '.join(formatted[:-1]) + ', & ' + formatted[-1]
+    return ', '.join(formatted[:19]) + ', . . . ' + formatted[-1]
 
 def detect_ref_type(ref_text):
     t = ref_text.lower()
@@ -94,17 +82,13 @@ def detect_ref_type(ref_text):
         return 'thesis'
     if re.search(r',\s*\d+\s*\(\d+\)', ref_text):
         return 'journal'
-    if re.search(r'\.\s+[A-Z][^.]+\.$', ref_text.strip()):
-        return 'book'
-    return 'journal'
+    return 'book'
 
 def parse_reference(ref_text):
     ref_text = clean_text(ref_text)
-    result = {
-        'raw': ref_text, 'authors': '', 'year': '', 'title': '',
+    result = {'raw': ref_text, 'authors': '', 'year': '', 'title': '',
         'source': '', 'volume': '', 'issue': '', 'pages': '',
-        'doi': '', 'publisher': '', 'ref_type': 'journal', 'url': '', 'thesis_info': '',
-    }
+        'doi': '', 'publisher': '', 'ref_type': 'journal', 'url': '', 'thesis_info': ''}
     doi_match = re.search(r'https?://doi\.org/\S+|doi:\s*\S+', ref_text, re.IGNORECASE)
     if doi_match:
         result['doi'] = doi_match.group().strip().rstrip('.')
@@ -116,16 +100,15 @@ def parse_reference(ref_text):
     year_match = re.search(r'\((\d{4}[a-z]?)\)', ref_text)
     if year_match:
         result['year'] = year_match.group(1)
-        authors_part = ref_text[:year_match.start()].strip().rstrip('.,')
+        result['authors'] = ref_text[:year_match.start()].strip().rstrip('.,')
         rest = ref_text[year_match.end():].strip().lstrip('.,').strip()
     else:
-        authors_part = ref_text; rest = ''
-    result['authors'] = authors_part
+        result['authors'] = ref_text; rest = ''
     ref_type = detect_ref_type(ref_text)
     result['ref_type'] = ref_type
     if ref_type == 'journal':
         parts = [p.strip() for p in rest.split('.') if p.strip()]
-        if len(parts) >= 1: result['title'] = parts[0]
+        if parts: result['title'] = parts[0]
         if len(parts) >= 2:
             jp = parts[1]
             vm = re.search(r',\s*(\d+)\s*\((\d+)\)\s*,\s*([\d\u2013\-]+)', jp)
@@ -133,17 +116,12 @@ def parse_reference(ref_text):
                 result['source'] = jp[:vm.start()].strip()
                 result['volume'] = vm.group(1); result['issue'] = vm.group(2); result['pages'] = vm.group(3)
             else:
-                vm2 = re.search(r',\s*(\d+)\s*,\s*([\d\u2013\-]+)', jp)
-                if vm2:
-                    result['source'] = jp[:vm2.start()].strip()
-                    result['volume'] = vm2.group(1); result['pages'] = vm2.group(2)
-                else:
-                    result['source'] = jp
+                result['source'] = jp
     elif ref_type == 'book':
         parts = [p.strip() for p in rest.split('.') if p.strip()]
         if parts: result['title'] = parts[0]
         if len(parts) >= 2: result['publisher'] = parts[1]
-    elif ref_type in ('thesis', 'thesis_online'):
+    elif ref_type in ('thesis','thesis_online'):
         parts = [p.strip() for p in rest.split('.') if p.strip()]
         if parts: result['title'] = parts[0]
         tm = re.search(r'\(([^)]+(?:skripsi|thesis|tesis|dissertation|disertasi)[^)]*)\)', rest, re.IGNORECASE)
@@ -159,8 +137,7 @@ def parse_reference(ref_text):
 def format_reference_apa7(parsed):
     r = parsed
     try:
-        al = parse_author_string(r['authors'])
-        authors_str = format_authors_apa7(al)
+        authors_str = format_authors_apa7(parse_author_string(r['authors']))
     except:
         authors_str = r['authors']
     year = f"({r['year']})" if r['year'] else ''
@@ -180,13 +157,12 @@ def format_reference_apa7(parsed):
         segs.append((f"{authors_str} {year}. ", False))
         segs.append((f"{r['title'].strip().rstrip('.')}. ", True))
         segs.append((f"{r['publisher'].strip().rstrip('.')}.", False))
-    elif r['ref_type'] in ('thesis', 'thesis_online'):
+    elif r['ref_type'] in ('thesis','thesis_online'):
         ti = r['thesis_info'] if r['thesis_info'] else 'Skripsi'
         src = r['source'].strip().rstrip('.') if r['source'] else ''
         segs.append((f"{authors_str} {year}. ", False))
         segs.append((r['title'].strip().rstrip('.'), True))
-        if src: segs.append((f" ({ti}, {src}).", False))
-        else: segs.append((f" ({ti}).", False))
+        segs.append((f" ({ti}, {src})." if src else f" ({ti}).", False))
         if r['url']: segs.append((f" Retrieved from {r['url']}", False))
         if r['doi']: segs.append((f" {r['doi']}", False))
     elif r['ref_type'] == 'webpage':
@@ -200,7 +176,7 @@ def format_reference_apa7(parsed):
     return segs
 
 # ─────────────────────────────────────────────
-# DOCUMENT FORMATTER
+# FORMATTING HELPERS
 # ─────────────────────────────────────────────
 
 def set_page_margins(doc):
@@ -214,9 +190,11 @@ def clear_pf(para):
     pf.space_before = Pt(0); pf.space_after = Pt(0)
     pf.first_line_indent = None; pf.left_indent = None; pf.right_indent = None
 
-def set_run_font(run, fname, fsize, bold=False, italic=False):
+def set_run_font(run, fname, fsize, bold=False, italic=False, color=None):
     run.font.name = fname; run.font.size = Pt(fsize)
     run.font.bold = bold; run.font.italic = italic
+    if color:
+        run.font.color.rgb = RGBColor(*color)
     rpr = run._r.get_or_add_rPr()
     rFonts = rpr.find(qn('w:rFonts'))
     if rFonts is None:
@@ -226,7 +204,12 @@ def set_run_font(run, fname, fsize, bold=False, italic=False):
 def get_full_text(para):
     return ''.join(r.text for r in para.runs).strip()
 
-def classify_paragraph(para, prev_text=''):
+def add_run_to_para(para, text, fname, fsize, bold=False, italic=False, color=None):
+    run = para.add_run(text)
+    set_run_font(run, fname, fsize, bold=bold, italic=italic, color=color)
+    return run
+
+def classify_paragraph(para):
     style_name = (para.style.name or '').lower()
     text = get_full_text(para)
     text_lower = text.lower().strip()
@@ -241,7 +224,7 @@ def classify_paragraph(para, prev_text=''):
     if text_lower in SECTIONS_H1: return 'h1'
     if re.match(r'^[A-Z][a-zA-Z\-]+,\s+[A-Z]\.', text): return 'reference_entry'
     if re.match(r'^(table|tabel)\s+\d+', text_lower): return 'table_title'
-    if re.match(r'^(figure|gambar)\s+\d+', text_lower): return 'figure_caption'
+    if re.match(r'^(figure|gambar|image)\s+\d+', text_lower): return 'figure_caption'
     if re.match(r'^email:', text_lower) or ('@' in text and len(text) < 80): return 'email'
     all_bold = all(r.bold for r in para.runs if r.text.strip())
     if all_bold and len(text) < 80:
@@ -249,6 +232,10 @@ def classify_paragraph(para, prev_text=''):
         if text_lower in SECTIONS_H2: return 'h2'
         if len(text) < 50: return 'h2'
     return 'body'
+
+# ─────────────────────────────────────────────
+# PARAGRAPH FORMATTERS
+# ─────────────────────────────────────────────
 
 def fmt_title(para):
     clear_pf(para); para.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -284,7 +271,7 @@ def fmt_keywords(para):
 
 def fmt_received(para):
     clear_pf(para); para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    para.paragraph_format.space_before = Pt(10); para.paragraph_format.space_after = Pt(20)
+    para.paragraph_format.space_before = Pt(6); para.paragraph_format.space_after = Pt(4)
     for r in para.runs: set_run_font(r, FONT_TNR, 10, italic=True)
 
 def fmt_h1(para):
@@ -369,17 +356,118 @@ def fmt_table(table):
             if old_tb is not None: tcPr.remove(old_tb)
             tcPr.append(tcBorders)
 
-def format_document(input_bytes):
-    """Format document from bytes, return formatted bytes."""
+# ─────────────────────────────────────────────
+# INSERT HEADER PARAGRAPHS
+# ─────────────────────────────────────────────
+
+def insert_journal_header(doc, meta):
+    """
+    Insert two header paragraphs at the top of the document:
+    Line 1: "{page_start}  –  Jurnal Informasi dan Komunikasi Administrasi Perkantoran, {year}, {vol}({no})."  (italic)
+    Line 2: "Jurnal Informasi dan Komunikasi Administrasi Perkantoran"  (bold)
+    Line 3: "Vol. {vol}, No. {no}, {year}"
+    Line 4: "Hlm. {page_start}"
+    Then a blank line separator.
+    """
+    from docx.oxml import OxmlElement
+
+    def new_para_before_first(doc, text_segments, align=WD_ALIGN_PARAGRAPH.LEFT):
+        """Insert a new paragraph before the first paragraph."""
+        first_para = doc.paragraphs[0]
+        new_p = OxmlElement('w:p')
+        first_para._p.addprevious(new_p)
+        # Find the new paragraph object
+        for p in doc.paragraphs:
+            if p._p is new_p:
+                p.alignment = align
+                pf = p.paragraph_format
+                pf.space_before = Pt(0); pf.space_after = Pt(0)
+                for text, fname, fsize, bold, italic, color in text_segments:
+                    run = p.add_run(text)
+                    set_run_font(run, fname, fsize, bold=bold, italic=italic, color=color)
+                return p
+        return None
+
+    vol  = meta.get('vol', '')
+    no   = meta.get('no', '')
+    year = meta.get('year', '')
+    page_start = meta.get('page_start', '')
+
+    # Insert in reverse order (each inserts before current first)
+    # 4. Blank separator
+    new_para_before_first(doc, [(' ', FONT_TNR, 10, False, False, None)])
+
+    # 3. "Hlm. {page_start}"
+    new_para_before_first(doc, [(f'Hlm. {page_start}', FONT_TNR, 10, False, False, None)])
+
+    # 2. "Vol. {vol}, No. {no}, {year}"
+    new_para_before_first(doc, [(f'Vol. {vol}, No. {no}, {year}', FONT_TNR, 10, False, False, None)])
+
+    # 1. Journal name bold
+    new_para_before_first(doc, [('Jurnal Informasi dan Komunikasi Administrasi Perkantoran', FONT_TNR, 10, True, False, None)])
+
+    # 0. Running header line (italic, page – journal vol info)
+    header_line = f'{page_start}  \u2013  '
+    journal_italic = f'Jurnal Informasi dan Komunikasi Administrasi Perkantoran, {year}, {vol}({no}).'
+    new_para_before_first(doc, [
+        (header_line, FONT_TNR, 10, False, True, None),
+        (journal_italic, FONT_TNR, 10, False, True, None),
+    ])
+
+def insert_doi_line(doc, meta):
+    """Insert DOI line and received/revised/accepted/published line after abstract section."""
+    doi = meta.get('doi', '')
+    received  = meta.get('received', '')
+    revised   = meta.get('revised', '')
+    accepted  = meta.get('accepted', '')
+    published = meta.get('published', '')
+
+    # Build received line text
+    received_text = f"Received {received}; Revised {revised}; Accepted {accepted}; Published Online {published}"
+
+    # Find position: after keywords_en / last keywords paragraph
+    paragraphs = doc.paragraphs
+    insert_after_idx = None
+    for i, para in enumerate(paragraphs):
+        text_lower = get_full_text(para).lower()
+        if re.match(r'^keywords?\s*:', text_lower):
+            insert_after_idx = i
+
+    if insert_after_idx is not None:
+        # Insert after that paragraph
+        ref_para = paragraphs[insert_after_idx]
+        from docx.oxml import OxmlElement
+
+        def insert_after(ref_p_elem, text_segs, align=WD_ALIGN_PARAGRAPH.LEFT):
+            new_p = OxmlElement('w:p')
+            ref_p_elem.addnext(new_p)
+            for p in doc.paragraphs:
+                if p._p is new_p:
+                    p.alignment = align
+                    pf = p.paragraph_format
+                    pf.space_before = Pt(0); pf.space_after = Pt(0)
+                    for text, fname, fsize, bold, italic in text_segs:
+                        run = p.add_run(text)
+                        set_run_font(run, fname, fsize, bold=bold, italic=italic)
+                    return p
+            return None
+
+        # Insert in order (each after the reference para, so order is preserved)
+        p1 = insert_after(ref_para._p, [(received_text, FONT_TNR, 10, False, True)])
+        if p1 and doi:
+            insert_after(p1._p, [(doi, FONT_TNR, 10, False, False)])
+
+# ─────────────────────────────────────────────
+# MAIN FORMAT FUNCTION
+# ─────────────────────────────────────────────
+
+def format_document(input_bytes, meta):
     doc = Document(io.BytesIO(input_bytes))
     set_page_margins(doc)
     paragraphs = list(doc.paragraphs)
     classifications = []
-    prev_text = ''
     for para in paragraphs:
-        cls = classify_paragraph(para, prev_text)
-        classifications.append(cls)
-        prev_text = get_full_text(para)
+        classifications.append(classify_paragraph(para))
 
     state = 'preamble'
     id_abstract_active = False
@@ -412,35 +500,42 @@ def format_document(input_bytes):
             cls = 'reference_entry'; classifications[i] = cls
 
         if cls == 'empty':
-            clear_pf(para); para.paragraph_format.space_before = Pt(0); para.paragraph_format.space_after = Pt(0)
+            clear_pf(para)
             continue
 
-        if state == 'abstract_id_label' and text_lower == 'abstrak': fmt_abstract_label(para)
-        elif state == 'abstract_en_label' and text_lower == 'abstract': fmt_abstract_label(para)
+        if state == 'abstract_id_label' and text_lower == 'abstrak':
+            fmt_abstract_label(para)
+        elif state == 'abstract_en_label' and text_lower == 'abstract':
+            fmt_abstract_label(para)
         elif id_abstract_active and text_lower != 'abstrak' and cls not in ('keywords',):
             state = 'abstract_id_body'; fmt_abstract_body(para, en=False)
         elif en_abstract_active and text_lower != 'abstract' and cls not in ('keywords',):
             state = 'abstract_en_body'; fmt_abstract_body(para, en=True)
         elif state == 'keywords_id': fmt_keywords(para)
         elif state == 'keywords_en': fmt_keywords(para)
-        elif state == 'received': fmt_received(para); state = 'body'
+        elif state == 'received':
+            # Remove existing received line — will be replaced by metadata
+            para.clear()
+            state = 'body'
         elif cls == 'h1': fmt_h1(para)
         elif cls == 'h2': fmt_h2(para)
         elif cls == 'h3': fmt_h3(para)
         elif cls == 'table_title': fmt_table_title(para)
         elif cls == 'figure_caption': fmt_fig_caption(para)
         elif cls == 'reference_entry' or (ref_section_active and re.match(r'^[A-Z]', text) and len(text) > 30):
-            parsed = parse_reference(text)
-            segs = format_reference_apa7(parsed)
-            fmt_ref_entry(para, segs)
+            fmt_ref_entry(para, format_reference_apa7(parse_reference(text)))
         elif cls == 'title' or (i < 4 and len(text) > 20): fmt_title(para)
-        elif cls in ('author',): fmt_author(para)
-        elif cls in ('affiliation',): fmt_affil(para)
+        elif cls == 'author': fmt_author(para)
+        elif cls == 'affiliation': fmt_affil(para)
         elif cls == 'email': fmt_email(para)
         else: fmt_body(para)
 
     for table in doc.tables:
         fmt_table(table)
+
+    # Insert metadata-based content
+    insert_doi_line(doc, meta)
+    insert_journal_header(doc, meta)
 
     output = io.BytesIO()
     doc.save(output)
@@ -457,33 +552,11 @@ st.set_page_config(
     layout="centered"
 )
 
-# Header
 st.title("📄 JIKAP Manuscript Formatter")
-st.markdown(
-    "*Jurnal Informasi dan Komunikasi Administrasi Perkantoran · PAP FKIP UNS*"
-)
+st.markdown("*Jurnal Informasi dan Komunikasi Administrasi Perkantoran · PAP FKIP UNS*")
 st.divider()
 
-# Info box
-with st.expander("ℹ️ Format yang diterapkan", expanded=False):
-    st.markdown("""
-    | Elemen | Format |
-    |---|---|
-    | Halaman | A4, margin 3 cm semua sisi |
-    | Judul artikel | Arial 14pt Bold |
-    | Body teks | Times New Roman 10pt, justified, indent |
-    | Heading 1 | Arial 12pt Bold |
-    | Heading 2 | Arial 10pt Bold |
-    | Heading 3 | Arial 10pt Italic |
-    | Abstrak Indonesia | TNR 10pt tegak |
-    | Abstrak Inggris | TNR 10pt italic |
-    | Keywords | TNR 10pt Bold Italic |
-    | Referensi | TNR 10pt, hanging indent, APA 7 |
-    | Tabel | Border atas/bawah header/bawah; judul di atas |
-    | Caption gambar | TNR 10pt italic, di bawah gambar |
-    """)
-
-# Upload
+# ── Step 1: Upload ──
 st.subheader("1. Upload Manuscript")
 uploaded_file = st.file_uploader(
     "Pilih file manuscript (.docx)",
@@ -491,37 +564,84 @@ uploaded_file = st.file_uploader(
     help="File harus dalam format Microsoft Word (.docx)"
 )
 
-if uploaded_file is not None:
-    st.success(f"✅ File diterima: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+if uploaded_file:
+    st.success(f"✅ **{uploaded_file.name}** ({uploaded_file.size/1024:.1f} KB)")
 
-    st.subheader("2. Format Manuscript")
+# ── Step 2: Metadata ──
+st.subheader("2. Metadata Jurnal")
+st.caption("Isi sesuai informasi edisi jurnal untuk artikel ini.")
 
-    if st.button("▶ Format Sekarang", type="primary", use_container_width=True):
+col1, col2, col3 = st.columns(3)
+with col1:
+    vol  = st.text_input("Volume", placeholder="mis. 9")
+with col2:
+    no   = st.text_input("Nomor", placeholder="mis. 2")
+with col3:
+    year = st.text_input("Tahun", placeholder="mis. 2025")
+
+col4, col5 = st.columns(2)
+with col4:
+    page_start = st.text_input("Halaman awal artikel", placeholder="mis. 146")
+with col5:
+    doi = st.text_input("DOI", placeholder="mis. https://dx.doi.org/10.20961/...")
+
+st.caption("Tanggal (format bebas, mis. March 05, 2025)")
+col6, col7, col8, col9 = st.columns(4)
+with col6:
+    received  = st.text_input("Received", placeholder="mis. March 05, 2025")
+with col7:
+    revised   = st.text_input("Revised", placeholder="mis. March 13, 2025")
+with col8:
+    accepted  = st.text_input("Accepted", placeholder="mis. March 16, 2025")
+with col9:
+    published = st.text_input("Published Online", placeholder="mis. March 02, 2025")
+
+# ── Step 3: Format ──
+st.subheader("3. Format & Download")
+
+if st.button("▶  Format Manuscript", type="primary", use_container_width=True):
+    if not uploaded_file:
+        st.warning("⚠️ Upload file manuscript terlebih dahulu.")
+    else:
+        meta = {
+            'vol': vol, 'no': no, 'year': year,
+            'page_start': page_start, 'doi': doi,
+            'received': received, 'revised': revised,
+            'accepted': accepted, 'published': published,
+        }
         with st.spinner("Memformat manuscript..."):
             try:
-                input_bytes = uploaded_file.getvalue()
-                output_bytes = format_document(input_bytes)
-
+                output_bytes = format_document(uploaded_file.getvalue(), meta)
                 st.success("✅ Manuscript berhasil diformat!")
-                st.subheader("3. Download Hasil")
-
                 output_filename = uploaded_file.name.replace(".docx", "_JIKAP_formatted.docx")
                 st.download_button(
-                    label="⬇️ Download Manuscript Terformat",
+                    label="⬇️  Download Manuscript Terformat",
                     data=output_bytes,
                     file_name=output_filename,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
                     type="primary"
                 )
-
             except Exception as e:
-                st.error(f"❌ Terjadi error: {str(e)}")
+                st.error(f"❌ Error: {str(e)}")
                 st.info("Pastikan file adalah dokumen Word (.docx) yang valid.")
 
-else:
-    st.info("👆 Upload file manuscript untuk memulai.")
+with st.expander("ℹ️ Format yang diterapkan"):
+    st.markdown("""
+    | Elemen | Format JIKAP |
+    |---|---|
+    | Halaman | A4, margin 3 cm semua sisi |
+    | Judul artikel | Arial 14pt Bold |
+    | Body teks | TNR 10pt, justified, indent 5 spasi |
+    | Heading 1 | Arial 12pt Bold |
+    | Heading 2 | Arial 10pt Bold |
+    | Abstrak Indonesia | TNR 10pt tegak |
+    | Abstrak Inggris | TNR 10pt italic |
+    | Keywords | TNR 10pt Bold Italic |
+    | Referensi | TNR 10pt, hanging indent, APA 7 |
+    | Header jurnal | Vol/No/Tahun/Hlm otomatis dari metadata |
+    | Received/DOI | Otomatis dari metadata |
+    """)
 
-# Footer
 st.divider()
 st.caption("JIKAP Manuscript Formatter · PAP FKIP Universitas Sebelas Maret · 2025")
