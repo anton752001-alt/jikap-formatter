@@ -24,6 +24,32 @@ SECTIONS_H1 = {
 }
 SECTIONS_H2 = {"research results","hasil penelitian","discussion","pembahasan"}
 
+# ── Date formatter ────────────────────────────────────────────────────────────
+
+def format_date(date_str):
+    """
+    Convert YYYY-MM-DD to "Month D, YYYY".
+    Example: "2026-05-03" → "May 3, 2026"
+    Falls back to original string if format not recognized.
+    """
+    import datetime
+    if not date_str or not date_str.strip():
+        return date_str
+    s = date_str.strip()
+    # Try YYYY-MM-DD
+    try:
+        dt = datetime.datetime.strptime(s, '%Y-%m-%d')
+        return dt.strftime('%B %-d, %Y')  # Linux: %-d removes leading zero
+    except Exception:
+        pass
+    # Try YYYY-M-D (single digit month/day)
+    try:
+        dt = datetime.datetime.strptime(s, '%Y-%m-%d')
+        return dt.strftime('%B %d, %Y').replace(' 0', ' ')
+    except Exception:
+        pass
+    return s  # return as-is if unrecognized
+
 # ── Sentence case converter ───────────────────────────────────────────────────
 
 def title_to_sentence_case(text):
@@ -392,22 +418,22 @@ def fmt_title(p):
     set_run_font(r,FONT_ARIAL,14,bold=True)
 
 def fmt_author(p):
-    """TNR 10pt, rata kiri, tidak bold."""
+    """TNR 11pt, rata kiri, tidak bold."""
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
-    apply_font_simple(p,FONT_TNR,10,bold=False)
+    apply_font_simple(p,FONT_TNR,11,bold=False)
 
 def fmt_affil(p):
-    """TNR 10pt, rata kiri."""
+    """TNR 11pt, rata kiri."""
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
-    apply_font_simple(p,FONT_TNR,10,bold=False)
+    apply_font_simple(p,FONT_TNR,11,bold=False)
 
 def fmt_email(p):
-    """TNR 10pt, rata kiri."""
+    """TNR 11pt, rata kiri."""
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
-    apply_font_simple(p,FONT_TNR,10,bold=False)
+    apply_font_simple(p,FONT_TNR,11,bold=False)
 
 def fmt_abstract_label(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
@@ -716,6 +742,22 @@ def format_document(input_bytes, meta):
     for i,para in enumerate(paragraphs):
         text=get_full_text(para); tl=text.lower().strip(); cls=classifications[i]
 
+        # Paragraphs before abstract: title(0), author, affil, email
+        if state=='preamble' and cls not in ('empty','abstract_label','h1','h2','h3','received_line'):
+            if i == 0 and len(text) > 10:
+                cls = 'title'
+            elif re.match(r'^email:', tl) or ('@' in text and len(text) < 100):
+                cls = 'email'
+            elif i < 8 and cls == 'body':
+                # Check: contains university/institute name → affiliation
+                if any(x in tl for x in ['universitas','university','institut','institute',
+                                          'sekolah','fakultas','department','program studi',
+                                          'pendidikan','perkantoran','administrasi']):
+                    cls = 'affiliation'
+                elif (re.search(r'[*]', text) or
+                      (re.search(r',\s*[A-Z]', text) and len(text) < 120 and '@' not in text)):
+                    cls = 'author'
+
         if tl=='abstrak': state='abstract_id_label'; id_ab=True; en_ab=False
         elif tl=='abstract':
             if state in ('abstract_id_label','abstract_id_body','keywords_id'):
@@ -743,6 +785,18 @@ def format_document(input_bytes, meta):
 
         if cls=='tab_row': continue
 
+        # Preamble: paragraphs before abstract (after title)
+        # i==0 → title; i>0 before abstract → author, affil, or email
+        if state=='preamble' and cls not in ('abstract_label','empty') and i > 0:
+            if re.match(r'^email:', tl) or ('@' in text and len(text) < 120):
+                cls = 'email'
+            elif any(x in tl for x in ['universitas','university','institut','institute',
+                                        'sekolah','fakultas','department','program studi',
+                                        'pendidikan','administrasi','perkantoran']):
+                cls = 'affiliation'
+            elif len(text) > 3 and '@' not in text:
+                cls = 'author'  # everything else before abstract = author name
+
         if state=='abstract_id_label' and tl=='abstrak': fmt_abstract_label(para)
         elif state=='abstract_en_label' and tl=='abstract': fmt_abstract_label(para)
         elif id_ab and tl!='abstrak' and cls not in ('keywords',):
@@ -759,7 +813,7 @@ def format_document(input_bytes, meta):
         elif cls=='figure_caption': fmt_fig_caption(para)
         elif cls=='reference_entry' or (ref_active and re.match(r'^[A-Z]',text) and len(text)>30):
             fmt_ref_entry(para,format_reference_apa7(parse_reference(text)))
-        elif cls=='title' or (i<4 and len(text)>20): fmt_title(para)   # FIX #10
+        elif cls=='title': fmt_title(para)   # FIX #10 — only explicit title class
         elif cls=='author': fmt_author(para)
         elif cls=='affiliation': fmt_affil(para)
         elif cls=='email': fmt_email(para)
@@ -794,7 +848,7 @@ with col3: year=st.text_input("Tahun",placeholder="mis. 2025")
 col4,col5,col6=st.columns(3)
 with col4: page_start=st.text_input("Halaman awal",placeholder="mis. 146")
 with col5: page_end=st.text_input("Halaman akhir",placeholder="mis. 154")
-with col6: doi=st.text_input("DOI",placeholder="mis. https://dx.doi.org/...")
+with col6: doi=st.text_input("DOI (nomor setelah https://dx.doi.org/)",placeholder="mis. 10.20961/jikap.v9i2.100106")
 st.caption("Citation (untuk footer halaman pertama)")
 authors_cite=st.text_input("Nama penulis (format APA)",placeholder="mis. Febriana, D.P., & Sawiji, H.")
 title_cite=st.text_input("Judul artikel",placeholder="mis. Self-Efficacy and Interpersonal Communication...")
@@ -812,9 +866,10 @@ if st.button("▶  Format Manuscript",type="primary",use_container_width=True):
     else:
         meta={
             'vol':vol,'no':no,'year':year,
-            'page_start':page_start,'page_end':page_end,'doi':doi,
+            'page_start':page_start,'page_end':page_end,'doi':('https://dx.doi.org/'+doi.strip()) if doi.strip() and not doi.strip().startswith('http') else doi.strip(),
             'authors_cite':authors_cite,'title_cite':title_cite,
-            'received':received,'revised':revised,'accepted':accepted,'published':published,
+            'received':format_date(received),'revised':format_date(revised),
+            'accepted':format_date(accepted),'published':format_date(published),
         }
         with st.spinner("Memformat manuscript..."):
             try:
