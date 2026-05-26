@@ -392,17 +392,22 @@ def fmt_title(p):
     set_run_font(r,FONT_ARIAL,14,bold=True)
 
 def fmt_author(p):
-    """FIX #4: TNR 10pt, not bold."""
+    """TNR 10pt, rata kiri, tidak bold."""
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-    apply_font_simple(p,FONT_TNR,10)
+    p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
+    apply_font_simple(p,FONT_TNR,10,bold=False)
 
 def fmt_affil(p):
+    """TNR 10pt, rata kiri."""
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-    apply_font_simple(p,FONT_TNR,10)
+    p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
+    apply_font_simple(p,FONT_TNR,10,bold=False)
 
 def fmt_email(p):
+    """TNR 10pt, rata kiri."""
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.LEFT
-    apply_font_simple(p,FONT_TNR,10)
+    p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0)
+    apply_font_simple(p,FONT_TNR,10,bold=False)
 
 def fmt_abstract_label(p):
     clear_pf(p); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
@@ -558,6 +563,18 @@ def hf_add_para(container, text='', fname=FONT_TNR, fsize=10, bold=False, italic
         run=p.add_run(text); set_run_font(run,fname,fsize,bold=bold,italic=italic)
     return p
 
+def get_jikap_logo_png():
+    """Load JIKAP PNG logo. File must be in same folder as app.py."""
+    import os
+    png_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'JIKAP_logo.png')
+    if not os.path.exists(png_path):
+        return None
+    try:
+        with open(png_path, 'rb') as f:
+            return f.read()
+    except Exception:
+        return None
+
 def build_headers_footers(doc, meta):
     vol=meta.get('vol',''); no=meta.get('no',''); year=meta.get('year','')
     page_start=meta.get('page_start',''); page_end=meta.get('page_end','')
@@ -574,11 +591,23 @@ def build_headers_footers(doc, meta):
         add_page_number_start_field(section, start_num)
     except: pass
 
-    # ── First page header: RIGHT aligned (FIX #12) ──
+    # ── First page header: logo + teks, RIGHT aligned ──
     fph=section.first_page_header
     for p in fph.paragraphs: p.clear()
+
+    # Logo paragraph (right aligned, above text lines)
+    logo_png = get_jikap_logo_png()
+    if logo_png:
+        logo_para = fph.add_paragraph()
+        logo_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        logo_para.paragraph_format.space_before = Pt(0)
+        logo_para.paragraph_format.space_after  = Pt(2)
+        run = logo_para.add_run()
+        run.add_picture(io.BytesIO(logo_png), width=Cm(2.0))
+
+    # Text lines below logo
     hf_add_para(fph,'Jurnal Informasi dan Komunikasi Administrasi Perkantoran',
-                bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)  # FIX #12
+                bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
     hf_add_para(fph,f'Vol. {vol}, No. {no}, {year}',
                 align=WD_ALIGN_PARAGRAPH.RIGHT)
     hf_add_para(fph,f'Hlm. {page_start}',
